@@ -1,28 +1,18 @@
-# social_contract_explorer_final_app_v150.py
-# Social Contract Explorer — v1.5 (Unified + 6 Domains + Summary + Map)
+# social_contract_explorer_final_app_v152_autoload.py
+# Social Contract Explorer — v1.52 (Always Autoload)
 # Author: CO3 Database
 # Date: 2025-11-04
 #
-# New in v1.5
-# - Auto-summary per selected domain: coverage share across chosen countries × waves.
-# - Mini map view: choropleth by country for a selected wave (OR/AND/SHARE logic respected).
+# v1.52 changes
+# - Always tries to autoload DEFAULT_WORKBOOK from the app folder; no query param required.
+# - Falls back to uploader if the file is not present.
+# - Keeps ?embed=1 to hide Streamlit chrome for iframe embedding.
 #
-# Streamlit Cloud notes
-# - Requirements: streamlit, pandas, numpy, plotly, kaleido (optional for PNG export)
-# - Create a `requirements.txt` with:
-#       streamlit>=1.38
-#       pandas>=2.1
-#       numpy>=1.26
-#       plotly>=5.24
-#       kaleido>=0.2.1
-# - Deploy this file as the app entry point.
-#
-# Run locally:
-#   pip install -U streamlit pandas numpy plotly kaleido
-#   streamlit run social_contract_explorer_final_app_v150.py
+# Place your Excel next to this file and name it exactly as DEFAULT_WORKBOOK below.
 
 import io
 import re
+from pathlib import Path
 from typing import List, Dict, Tuple
 
 import numpy as np
@@ -30,10 +20,49 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+# ---------- Config ----------
 st.set_page_config(page_title="Social Contract Explorer", page_icon="🧭", layout="wide")
-HIDE_STYLE = "<style>.block-container{padding-top:1.2rem;padding-bottom:1.2rem;}.stAlert{border-radius:12px;}.metric-card{border:1px solid #E5E7EB;border-radius:14px;padding:14px;}.caption{color:#6B7280;font-size:.9rem;}.small{font-size:12px;color:#6B7280;}</style>"
-st.markdown(HIDE_STYLE, unsafe_allow_html=True)
-st.title("🧭 Social Contract Explorer — v1.5")
+
+def _get_query_params():
+    try:
+        return st.query_params  # type: ignore[attr-defined]
+    except Exception:
+        try:
+            return st.experimental_get_query_params()
+        except Exception:
+            return {}
+
+params = _get_query_params()
+EMBED = str(params.get("embed", "0")).strip().lower() in {"1", "true", "yes"}
+
+# Name of the bundled workbook to autoload
+DEFAULT_WORKBOOK = "unified_workbook.xlsx"
+
+# Base style
+BASE_STYLE = """
+<style>
+.block-container{padding-top:1.0rem;padding-bottom:1.0rem;}
+.stAlert{border-radius:12px;}
+.metric-card{border:1px solid #E5E7EB;border-radius:14px;padding:14px;}
+.caption{color:#6B7280;font-size:.9rem;}
+.small{font-size:12px;color:#6B7280;}
+</style>
+"""
+st.markdown(BASE_STYLE, unsafe_allow_html=True)
+
+if EMBED:
+    EMBED_STYLE = """
+    <style>
+    header {visibility: hidden;}
+    [data-testid="stToolbar"] {display: none !important;}
+    footer {visibility: hidden;}
+    .block-container{padding-top:.4rem;padding-bottom:.4rem;}
+    section[data-testid="stSidebar"] {border-right: 0;}
+    </style>
+    """
+    st.markdown(EMBED_STYLE, unsafe_allow_html=True)
+
+st.title("🧭 Social Contract Explorer — v1.52")
 st.caption("Reads your unified workbook, enforces the 6 canonical domains, and shows PRD Stage 5 coverage + summary + map.")
 
 DOMAINS_MAP = {1:"Legitimacy",2:"Fairness",3:"Citizenship",4:"Social Cohesion",5:"Citizen–State Relationship",6:"Resilience"}
@@ -93,8 +122,29 @@ def build_from_unified_excel(uploaded) -> pd.DataFrame:
 
 with st.sidebar:
     st.header("Data & Configuration")
-    uploaded = st.file_uploader("📄 Upload unified workbook (Excel)", type=["xlsx", "xls"])
+    # Always try to autoload the bundled workbook in the app directory
+    default_path = Path(__file__).parent / DEFAULT_WORKBOOK
+    if default_path.exists():
+        uploaded = str(default_path)
+        st.success(f"Auto-loaded bundled workbook: {DEFAULT_WORKBOOK}")
+        st.caption("To replace, upload a file below or overwrite the bundled workbook in the app folder.")
+        override = st.file_uploader("📄 (Optional) Upload a different unified workbook", type=["xlsx", "xls"], help="This will override the bundled file for this session.")
+        if override is not None:
+            uploaded = override
+    else:
+        uploaded = st.file_uploader("📄 Upload unified workbook (Excel)", type=["xlsx", "xls"])
+        st.info(f"No bundled workbook found. Place a file named '{DEFAULT_WORKBOOK}' next to the app to autoload.")
+
     st.caption("Uses surveys + surveys_questions + questions_names; domains collapsed to the 6 canonical buckets.")
+
+    if not EMBED:
+        st.markdown("---")
+        st.subheader("🔗 Embed")
+        st.caption("Paste this into your website to embed the app (iframe).")
+        example_url = "https://your-org-your-app.streamlit.app/?embed=1"
+        iframe = f'<iframe src="{example_url}" width="100%" height="900" style="border:0;" loading="lazy" referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe>'
+        st.code(iframe, language="html")
+        st.caption("Tip: Include your Excel in the repo as 'unified_workbook.xlsx' to autoload.")
 
 if uploaded is None:
     st.warning("Please upload your unified workbook."); st.stop()
@@ -111,7 +161,7 @@ for (dom, th), g in df_long.groupby(["domain", "theme"]):
     pairs = sorted(set(zip(g["question_code"].astype(str), g["question_label"].astype(str))))
     mapping[str(dom)][str(th)] = pairs
 
-data_source = getattr(uploaded, "name", "uploaded")
+data_source = getattr(uploaded, "name", uploaded) if hasattr(uploaded, "name") else str(uploaded)
 
 colA, colB, colC, colD = st.columns(4)
 with colA: st.metric("Countries", f"{df_long['country'].nunique():,}")
@@ -152,7 +202,7 @@ c1, c2 = st.columns([2,1])
 with c1: chosen_countries = st.multiselect("Countries", options=available_countries, default=available_countries[:20])
 with c2: chosen_waves = st.multiselect("Waves (grouped)", options=available_waves, default=available_waves)
 
-logic_mode = st.radio("Coverage logic", ["Any selected question present (OR)","All selected questions present (AND)","Share of selected questions present (0–1)"], index=0)
+logic_mode = st.radio("Coverage logic", ["Any selected question present (OR)","All selected questions present (AND)","Share of selected questions present (0–1)"], index=0, horizontal=True if EMBED else False)
 
 st.subheader("Stage 5 — Coverage Heatmap")
 subset = df_long[(df_long["country"].isin(chosen_countries)) & (df_long["wave"].isin(chosen_waves)) & (df_long["question_code"].astype(str).isin([str(q) for q in selected_questions]))].copy()
